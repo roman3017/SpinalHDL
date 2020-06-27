@@ -101,3 +101,87 @@ case class Mii(p : MiiParameter) extends Bundle with IMasterSlave {
     slave(RX)
   }
 }
+
+case class RmiiParameter(tx : RmiiTxParameter,
+                         rx : RmiiRxParameter)
+
+case class RmiiTxParameter(dataWidth : Int)
+
+case class RmiiRxParameter(dataWidth : Int,
+                           withEr    : Boolean)
+
+case class RmiiTx(p : RmiiTxParameter) extends Bundle with IMasterSlave {
+  val D = Bits(p.dataWidth bits)
+  val EN = Bool()
+
+  override def asMaster(): Unit = {
+    out(D, EN)
+  }
+
+  def fromTxStream() = {
+    val ret = MacTxInterFrame(p.dataWidth)
+    //D := ClockDomain.current.withRevertedClockEdge()(RegNext(ret.io.output.data))
+    //EN := ClockDomain.current.withRevertedClockEdge()(RegNext(ret.io.output.valid))
+    D := RegNext(ret.io.output.data)
+    EN := RegNext(ret.io.output.valid)
+    ret.io.input
+  }
+}
+
+case class RmiiRx(p : RmiiRxParameter) extends Bundle with IMasterSlave {
+  val D = Bits(p.dataWidth bits)
+  val CRS_DV = Bool()
+  val ER = p.withEr generate Bool()
+
+  override def asMaster(): Unit = {
+    out(D, CRS_DV)
+    outWithNull(ER)
+  }
+
+  def toRxFlow() = {
+    val ret = Flow(Fragment(PhyRx(p.dataWidth)))
+    val s1 = Flow(PhyRx(p.dataWidth))
+    val s2 = RegNext(s1)
+    val s3 = RegNext(s2)
+
+    s1.data := RegNext(D)
+    s1.valid := RegNext(CRS_DV)
+    if (p.withEr) {
+      s1.error := RegNext(ER)
+    } else {
+      s1.error := Bool(false)
+    }
+
+    ret.fragment := s3.payload
+    ret.valid := s2.valid || s3.valid
+    ret.last := !s1.valid && !s2.valid && s3.valid
+
+    ret
+  }
+
+  def simReceive(frame : Seq[Int], cd : ClockDomain): Unit ={
+    import spinal.core.sim._
+    def nibble(value : Int): Unit ={
+      D   #= value
+      CRS_DV #= true
+      ER  #= false
+      cd.waitSampling()
+      CRS_DV  #= false
+    }
+    for(byte <- frame){
+      nibble(byte & 0xF)
+      nibble((byte >> 4) & 0xF)
+    }
+    cd.waitSampling(6)
+  }
+}
+
+case class Rmii(p : RmiiParameter) extends Bundle with IMasterSlave {
+  val TX = RmiiTx(p.tx)
+  val RX = RmiiRx(p.rx)
+
+  override def asMaster(): Unit = {
+    master(TX)
+    slave(RX)
+  }
+}
